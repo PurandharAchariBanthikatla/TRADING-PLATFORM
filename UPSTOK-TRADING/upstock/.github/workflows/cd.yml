@@ -1,0 +1,122 @@
+name: CD
+
+# Runs after CI succeeds on main. Builds immutable, SHA-tagged images for
+# every service, pushes them to the registry, deploys to staging, runs
+# smoke tests, then gates production behind a required manual approval
+# (configured on the `production` GitHub Environment).
+#
+# NOTE: this pipeline is written against plain Docker hosts (per project
+# constraints -- no Kubernetes, no Compose). The `deploy-to-staging` /
+# `deploy-to-production` steps below are intentionally left as placeholders
+# (ssh + scripts/docker-run.sh on the target host, or your registry's
+# preferred pull-and-restart mechanism) since no target infrastructure has
+# been provisioned yet. Fill in REGISTRY, STAGING_HOST, PRODUCTION_HOST
+# secrets/vars once hosts exist; nothing here talks to a real environment
+# until then.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ vars.CONTAINER_REGISTRY || 'ghcr.io' }}
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}/exchange
+
+jobs:
+  build-and-push:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Build & push immutable images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api-gateway, ledger-service, wallet-service, market-data-service, frontend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve build context for ${{ matrix.service }}
+        id: ctx
+        run: |
+          case "${{ matrix.service }}" in
+            frontend) echo "path=frontend" >> "$GITHUB_OUTPUT" ;;
+            *) echo "path=services/${{ matrix.service }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Build and push (tagged by commit SHA and by release version if present)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.ctx.outputs.path }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:${{ github.event.workflow_run.head_sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:latest
+
+  deploy-staging:
+    name: Deploy to staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy images to staging host
+        run: |
+          echo "Placeholder: pull exchange-api-gateway, exchange-ledger-service,"
+          echo "exchange-wallet-service, exchange-market-data-service, and"
+          echo "exchange-frontend all tagged ${{ github.event.workflow_run.head_sha }} on"
+          echo "\$STAGING_HOST, then re-run scripts/docker-run.sh with those tags."
+          echo "Wire this up once a staging host/registry exists."
+
+  smoke-test-staging:
+    name: Smoke test staging
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health checks against staging
+        run: |
+          echo "Placeholder: curl \$STAGING_URL/health/ready and assert 200,"
+          echo "curl the frontend root and assert 200, run a minimal register+login"
+          echo "smoke flow against the staging API."
+
+  deploy-production:
+    name: Deploy to production
+    needs: smoke-test-staging
+    runs-on: ubuntu-latest
+    # The `production` GitHub Environment should have required reviewers
+    # configured in repo settings -- this job will not run until someone
+    # with approval rights signs off, satisfying "require production approval".
+    environment: production
+    steps:
+      - name: Deploy images to production host
+        run: |
+          echo "Placeholder: same pull-and-restart flow as staging, pointed at"
+          echo "\$PRODUCTION_HOST, with a pre-deploy database backup step and a"
+          echo "documented rollback command (see docs/DEPLOYMENT.md)."
+
+  smoke-test-production:
+    name: Smoke test production
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health checks against production
+        run: |
+          echo "Placeholder: same smoke checks as staging, against \$PRODUCTION_URL."
+          echo "A failing smoke test here should trigger the rollback procedure"
+          echo "documented in docs/DEPLOYMENT.md, not a silent failure."

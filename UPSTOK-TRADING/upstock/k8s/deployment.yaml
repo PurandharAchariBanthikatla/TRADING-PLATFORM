@@ -1,0 +1,448 @@
+# ---------------------------------------------------------------------------
+# UpStok Trading -- Deployments
+#
+# Mirrors scripts/docker-run.sh:
+#   postgres, redis        -> internal infra (ClusterIP only, see service.yaml)
+#   api-gateway             -> public, issues JWTs
+#   ledger-service          -> internal
+#   wallet-service          -> internal, calls ledger-service
+#   market-data-service     -> internal, runs its own background loops
+#   frontend                -> public, Next.js standalone server
+#
+# Before applying, replace every "CHANGE_ME_IN_PRODUCTION" value below with a
+# real secret (see .env.example at the repo root for how to generate them),
+# and point DATABASE_URL at a real Postgres host if you are not running the
+# bundled postgres Deployment in this file.
+#
+# kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: upstok-config
+  labels:
+    app.kubernetes.io/part-of: upstok
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  DB_POOL_SIZE: "10"
+  DB_MAX_OVERFLOW: "20"
+  DB_POOL_TIMEOUT_SECONDS: "30"
+  JWT_ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "30"
+  BCRYPT_ROUNDS: "12"
+  RATE_LIMIT_LOGIN_ATTEMPTS: "5"
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: "300"
+  RATE_LIMIT_REGISTER_ATTEMPTS: "3"
+  RATE_LIMIT_REGISTER_WINDOW_SECONDS: "3600"
+  CORS_ORIGINS: "https://upstok.example.com"
+  API_V1_PREFIX: "/api/v1"
+  MAX_WITHDRAWAL_PER_TRANSACTION: "10000"
+  MAX_WITHDRAWAL_PER_DAY: "25000"
+  SIMULATOR_ENABLED: "true"
+  SIMULATOR_TICK_INTERVAL_SECONDS: "1.0"
+  SIMULATOR_SEED: "1337"
+  EVENT_STREAM_MAX_DELIVERY_ATTEMPTS: "5"
+  EVENT_STREAM_CLAIM_MIN_IDLE_MS: "30000"
+  EVENT_STREAM_MAXLEN_APPROX: "100000"
+  TICKER_CACHE_TTL_SECONDS: "5"
+  LEDGER_SERVICE_BASE_URL: "http://ledger-service:8000/api/v1"
+  NEXT_PUBLIC_API_BASE_URL: "https://upstok.example.com/api/v1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: upstok-secrets
+  labels:
+    app.kubernetes.io/part-of: upstok
+type: Opaque
+stringData:
+  POSTGRES_USER: "exchange"
+  POSTGRES_PASSWORD: "CHANGE_ME_IN_PRODUCTION"
+  POSTGRES_DB: "exchange"
+  # Same DATABASE_URL is shared by every backend service, same as
+  # scripts/docker-run.sh -- only the host differs (k8s Service DNS name
+  # instead of a container name).
+  DATABASE_URL: "postgresql+asyncpg://exchange:CHANGE_ME_IN_PRODUCTION@postgres:5432/exchange"
+  REDIS_URL_GATEWAY: "redis://redis:6379/0"
+  REDIS_URL_MARKETDATA: "redis://redis:6379/1"
+  # Must be identical byte-for-byte across every service -- api-gateway is
+  # the only issuer, everything else only verifies signatures.
+  JWT_SECRET_KEY: "CHANGE_ME_IN_PRODUCTION"
+  INTERNAL_SERVICE_KEY: "CHANGE_ME_IN_PRODUCTION"
+---
+# ---------------------------------------------------------------------------
+# Postgres (internal only -- not exposed via Ingress or NodePort)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/part-of: upstok
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16.6-bookworm
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: POSTGRES_PASSWORD } }
+            - name: POSTGRES_DB
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: POSTGRES_DB } }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "exchange"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "exchange"] }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+# ---------------------------------------------------------------------------
+# Redis (internal only)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4.1-bookworm
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "100m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+---
+# ---------------------------------------------------------------------------
+# api-gateway (public -- issues JWTs, published via Ingress)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      initContainers:
+        - name: migrate
+          image: exchange/api-gateway:latest # replace with your registry:sha tag
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+      containers:
+        - name: api-gateway
+          image: exchange/api-gateway:latest # replace with your registry:sha tag
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: SERVICE_NAME
+              value: "api-gateway"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: REDIS_URL_GATEWAY } }
+            - name: JWT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: JWT_SECRET_KEY } }
+            - name: INTERNAL_SERVICE_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: INTERNAL_SERVICE_KEY } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+# ---------------------------------------------------------------------------
+# ledger-service (internal only)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-service
+  labels:
+    app: ledger-service
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ledger-service
+  template:
+    metadata:
+      labels:
+        app: ledger-service
+    spec:
+      initContainers:
+        - name: migrate
+          image: exchange/ledger-service:latest # replace with your registry:sha tag
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+      containers:
+        - name: ledger-service
+          image: exchange/ledger-service:latest # replace with your registry:sha tag
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: SERVICE_NAME
+              value: "ledger-service"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+            - name: JWT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: JWT_SECRET_KEY } }
+            - name: INTERNAL_SERVICE_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: INTERNAL_SERVICE_KEY } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+# ---------------------------------------------------------------------------
+# wallet-service (internal only -- calls ledger-service)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wallet-service
+  labels:
+    app: wallet-service
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wallet-service
+  template:
+    metadata:
+      labels:
+        app: wallet-service
+    spec:
+      initContainers:
+        - name: migrate
+          image: exchange/wallet-service:latest # replace with your registry:sha tag
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+      containers:
+        - name: wallet-service
+          image: exchange/wallet-service:latest # replace with your registry:sha tag
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: SERVICE_NAME
+              value: "wallet-service"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+            - name: JWT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: JWT_SECRET_KEY } }
+            - name: INTERNAL_SERVICE_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: INTERNAL_SERVICE_KEY } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+# ---------------------------------------------------------------------------
+# market-data-service (internal only -- runs simulator/candle-aggregator/DLQ
+# loops in-process; uses Redis Streams on logical DB 1)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-data-service
+  labels:
+    app: market-data-service
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 1 # background stream consumer -- scale carefully, see app docs before >1
+  selector:
+    matchLabels:
+      app: market-data-service
+  template:
+    metadata:
+      labels:
+        app: market-data-service
+    spec:
+      initContainers:
+        - name: migrate
+          image: exchange/market-data-service:latest # replace with your registry:sha tag
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+      containers:
+        - name: market-data-service
+          image: exchange/market-data-service:latest # replace with your registry:sha tag
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: upstok-config }
+          env:
+            - name: SERVICE_NAME
+              value: "market-data-service"
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: REDIS_URL_MARKETDATA } }
+            - name: JWT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: JWT_SECRET_KEY } }
+            - name: INTERNAL_SERVICE_KEY
+              valueFrom: { secretKeyRef: { name: upstok-secrets, key: INTERNAL_SERVICE_KEY } }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+# ---------------------------------------------------------------------------
+# frontend (public -- Next.js standalone server, published via Ingress)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: upstok
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: exchange/frontend:latest # replace with your registry:sha tag
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_BASE_URL
+              valueFrom: { configMapKeyRef: { name: upstok-config, key: NEXT_PUBLIC_API_BASE_URL } }
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
