@@ -9,8 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # --- builder: install deps into a venv so the runtime stage stays lean ---
 FROM base AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential=12.9 \
-      libpq-dev=15.10-0+deb12u1 \
+      build-essential \
+      libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
@@ -24,8 +24,8 @@ RUN pip install -r requirements.txt
 FROM base AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5=15.10-0+deb12u1 \
-      curl=7.88.1-10+deb12u12 \
+      libpq5 \
+      curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 appgroup \
     && useradd --uid 10001 --gid appgroup --shell /usr/sbin/nologin --create-home appuser

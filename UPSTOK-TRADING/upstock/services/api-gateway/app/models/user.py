@@ -25,9 +25,16 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
 
     role: Mapped[UserRole] = mapped_column(
-        SAEnum(UserRole, name="user_role"), default=UserRole.USER, nullable=False
+        SAEnum(
+            UserRole,
+            name="user_role",
+            values_callable=lambda enum_class: [member.value for member in enum_class],
+        ),
+        default=UserRole.USER,
+        nullable=False,
     )
 
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

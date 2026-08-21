@@ -14,6 +14,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_API_BASE_URL=http://15.207.222.23:8000/api/v1
 RUN npm run build
 
 # --- runtime: minimal, non-root, only the standalone server output ---
@@ -23,7 +24,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 PORT=3000
 
 RUN groupadd --gid 10001 nodegroup \
     && useradd --uid 10001 --gid nodegroup --shell /usr/sbin/nologin --create-home nodeuser \
-    && apt-get update && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u12 \
+    && apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder --chown=nodeuser:nodegroup /app/.next/standalone ./
