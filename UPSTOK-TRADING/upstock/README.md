@@ -121,3 +121,49 @@ real `.env` file -- `.gitignore` excludes them, but review diffs anyway.
 Each phase is built as a complete vertical slice -- UI through to database
 -- and tested before the next one starts, per the project's own ground
 rules.
+*****************************************
+THIS IS THE PROCESS I SHOULD NEED TO DO WHILE RUNNING DOCKER EVERY TIME
+
+cd ~/TRADING-PLATFORM/UPSTOK-TRADING/upstock
+
+sed -i 's/15\.207\.222\.23/3.110.122.139/g' frontend/.env.production
+sed -i 's/15\.207\.222\.23/3.110.122.139/g' frontend/Dockerfile
+grep -RIn '15\.207\.222\.23' frontend
+grep -RIn '3\.110\.122\.139' frontend/.env.production frontend/Dockerfile
+docker stop api-gateway
+docker rm api-gateway
+
+docker run -d \
+  --name api-gateway \
+  --network upstok-net \
+  -p 8000:8000 \
+  -e DATABASE_URL='postgresql+asyncpg://exchange:exchange@postgres:5432/exchange' \
+  -e REDIS_URL='redis://redis:6379/0' \
+  -e JWT_ALGORITHM='HS256' \
+  -e ACCESS_TOKEN_EXPIRE_MINUTES='15' \
+  -e BCRYPT_ROUNDS='12' \
+  -e ENVIRONMENT='production' \
+  -e SERVICE_NAME='api-gateway' \
+  -e JWT_SECRET_KEY='' \
+  -e REFRESH_TOKEN_EXPIRE_DAYS='30' \
+  -e CORS_ORIGINS='["http://3.110.122.139:3000"]' \
+  -e API_V1_PREFIX='/api/v1' \
+  -e LOG_LEVEL='INFO' \
+  --health-cmd='curl --fail http://localhost:8000/health/live || exit 1' \
+  --health-interval=15s \
+  --health-timeout=3s \
+  --health-start-period=10s \
+  --health-retries=3 \
+  upstok-api-gateway:latest
+
+docker build --no-cache -t upstok .
+docker stop upstok
+docker rm upstok
+docker run -d \
+  --name upstok \
+  --network upstok-net \
+  -p 3000:3000 \
+  -e NODE_ENV=production \
+  -e PORT=3000 \
+  -e HOSTNAME=0.0.0.0 \
+  upstok
