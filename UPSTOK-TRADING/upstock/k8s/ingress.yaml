@@ -1,49 +1,34 @@
-# ---------------------------------------------------------------------------
-# UpStok Trading -- Ingress
-#
-# Routes /api/* to api-gateway (the only service that's meant to be public
-# besides the frontend, per scripts/docker-run.sh) and everything else to
-# the Next.js frontend. Assumes an nginx ingress controller is installed;
-# swap ingressClassName / annotations if you're using a different one
-# (ALB, Traefik, GKE, etc).
-#
-# Replace upstok.example.com with your real domain before applying, and
-# make sure CORS_ORIGINS / NEXT_PUBLIC_API_BASE_URL in deployment.yaml
-# match it.
-# ---------------------------------------------------------------------------
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: upstok-ingress
+  name: upstok-trading
+  namespace: trading
   labels:
     app.kubernetes.io/part-of: upstok
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # api-gateway serves JSON, not HTML -- keep path as-is instead of
-    # stripping the /api prefix.
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    cert-manager.io/cluster-issuer: letsencrypt-prod # remove if not using cert-manager
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:517293881035:certificate/243ad1f8-ea4e-468b-b86e-54896fc0fcc2
 spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - upstok.example.com
-      secretName: upstok-tls
+  ingressClassName: alb
   rules:
-    - host: upstok.example.com
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: api-gateway
-                port:
-                  number: 8000
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 3000
+  - host: trading.purandhardevops.online
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 8000
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 3000
