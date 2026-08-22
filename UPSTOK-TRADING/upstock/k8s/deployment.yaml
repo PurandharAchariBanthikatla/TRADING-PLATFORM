@@ -20,6 +20,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: upstok-config
+  namespace: Trading
   labels:
     app.kubernetes.io/part-of: upstok
 data:
@@ -54,6 +55,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: upstok-secrets
+  namespace: Trading
   labels:
     app.kubernetes.io/part-of: upstok
 type: Opaque
@@ -79,6 +81,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
+  namespace: Trading
   labels:
     app.kubernetes.io/part-of: upstok
 spec:
@@ -91,6 +94,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
+  namespace: Trading
   labels:
     app: postgres
     app.kubernetes.io/part-of: upstok
@@ -144,6 +148,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis
+  namespace: Trading
   labels:
     app: redis
     app.kubernetes.io/part-of: upstok
@@ -181,6 +186,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-gateway
+  namespace: Trading
   labels:
     app: api-gateway
     app.kubernetes.io/part-of: upstok
@@ -196,7 +202,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: exchange/api-gateway:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:api-gateway"
           command: ["alembic", "upgrade", "head"]
           envFrom:
             - configMapRef: { name: upstok-config }
@@ -205,7 +211,7 @@ spec:
               valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
       containers:
         - name: api-gateway
-          image: exchange/api-gateway:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:api-gateway"
           ports:
             - containerPort: 8000
           envFrom:
@@ -240,6 +246,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ledger-service
+  namespace: Trading
   labels:
     app: ledger-service
     app.kubernetes.io/part-of: upstok
@@ -255,7 +262,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: exchange/ledger-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:ledger-service"
           command: ["alembic", "upgrade", "head"]
           envFrom:
             - configMapRef: { name: upstok-config }
@@ -264,7 +271,7 @@ spec:
               valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
       containers:
         - name: ledger-service
-          image: exchange/ledger-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:ledger-service"
           ports:
             - containerPort: 8000
           envFrom:
@@ -297,6 +304,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: wallet-service
+  namespace: Trading
   labels:
     app: wallet-service
     app.kubernetes.io/part-of: upstok
@@ -312,7 +320,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: exchange/wallet-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:wallet-service"
           command: ["alembic", "upgrade", "head"]
           envFrom:
             - configMapRef: { name: upstok-config }
@@ -321,7 +329,7 @@ spec:
               valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
       containers:
         - name: wallet-service
-          image: exchange/wallet-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:wallet-service"
           ports:
             - containerPort: 8000
           envFrom:
@@ -355,6 +363,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: market-data-service
+  namespace: Trading
   labels:
     app: market-data-service
     app.kubernetes.io/part-of: upstok
@@ -370,7 +379,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: exchange/market-data-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:market-data-service"
           command: ["alembic", "upgrade", "head"]
           envFrom:
             - configMapRef: { name: upstok-config }
@@ -379,7 +388,7 @@ spec:
               valueFrom: { secretKeyRef: { name: upstok-secrets, key: DATABASE_URL } }
       containers:
         - name: market-data-service
-          image: exchange/market-data-service:latest # replace with your registry:sha tag
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:market-data-service"
           ports:
             - containerPort: 8000
           envFrom:
@@ -410,39 +419,56 @@ spec:
 # ---------------------------------------------------------------------------
 # frontend (public -- Next.js standalone server, published via Ingress)
 # ---------------------------------------------------------------------------
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: "apps/v1"
+kind: "Deployment"
 metadata:
-  name: frontend
+  name: "frontend"
+  namespace: "scanner"
   labels:
-    app: frontend
+    app: "frontend"
     app.kubernetes.io/part-of: upstok
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: frontend
+      app: "frontend"
   template:
     metadata:
       labels:
-        app: frontend
+        app: "frontend"
     spec:
       containers:
-        - name: frontend
-          image: exchange/frontend:latest # replace with your registry:sha tag
+        - name: "frontend"
+          image: "517293881035.dkr.ecr.ap-south-1.amazonaws.com/upstok-trading:frontend"
           ports:
             - containerPort: 3000
           env:
             - name: NEXT_PUBLIC_API_BASE_URL
-              valueFrom: { configMapKeyRef: { name: upstok-config, key: NEXT_PUBLIC_API_BASE_URL } }
+              valueFrom:
+                configMapKeyRef:
+                  name: upstok-config
+                  key: NEXT_PUBLIC_API_BASE_URL
           readinessProbe:
-            httpGet: { path: /, port: 3000 }
+            httpGet:
+              path: /
+              port: 3000
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /, port: 3000 }
+            httpGet:
+              path: /
+              port: 3000
             initialDelaySeconds: 10
             periodSeconds: 15
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits: { cpu: "500m", memory: "256Mi" }
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+      tolerations:
+        - key: "name"
+          operator: "Equal"
+          value: "frontend_group"
+          effect: "NoSchedule"
