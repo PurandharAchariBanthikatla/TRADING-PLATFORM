@@ -1,4 +1,4 @@
-# Exchange (working name)
+## Exchange (Upstok)
 
 A sandbox-mode cryptocurrency trading platform, built incrementally as a
 set of independently deployable services. **This repo does not yet hold real
